@@ -86,7 +86,7 @@ export const DEFAULT_SHIFT_DEFINITIONS: Record<string, ShiftDefinition> = {
     color: 'bg-green-100 text-green-700 border-green-200',
     shortLabel: '特',
     description: '特休假',
-    hours: 0,
+    hours: 8, // Default 8 hours, but excluded from working stats usually
     sortOrder: 7
   },
 };

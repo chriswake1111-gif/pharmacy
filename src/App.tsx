@@ -119,7 +119,7 @@ const App: React.FC = () => {
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(false); // New state for maximize mode
   
   // PWA Install Prompt State
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -412,6 +412,7 @@ const App: React.FC = () => {
     }
 
     // Check if allowed shift types for overtime
+    // Allow any shift that has hours > 0 and is not OFF
     const def = shiftDefs[code];
     if (def && def.hours > 0 && code !== BuiltInShifts.OFF) {
        setSelectedOvertimeCell({ empId, dateStr, baseCode: code, position });

@@ -2,8 +2,7 @@
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
 import { zhTW } from 'date-fns/locale';
-import { Employee, StoreSchedule, ShiftDefinition, parseShiftCode } from '../types';
-import { DEPARTMENTS } from '../constants';
+import { Employee, StoreSchedule, ShiftDefinition, parseShiftCode, BuiltInShifts } from '../types';
 
 export const exportToExcel = (
   storeName: string,
@@ -16,19 +15,14 @@ export const exportToExcel = (
   const retailEmps = employees.filter(e => e.department === 'retail');
   const dispensingEmps = employees.filter(e => e.department === 'dispensing');
   
-  // Combine with a "Spacer" concept in mind
-  // We will insert a blank column between Retail and Dispensing in the generated data
-  
   const startDateStr = format(dateRange[0], 'yyyy/MM/dd');
   const endDateStr = format(dateRange[dateRange.length - 1], 'yyyy/MM/dd');
 
   // 0. Prepare Title Row
-  // Title spans across: Date, Weekday, Retail..., Spacer, Dispensing...
   const totalCols = 2 + retailEmps.length + (dispensingEmps.length > 0 ? 1 : 0) + dispensingEmps.length;
   const titleRow = [`${storeName} 排班表 (${startDateStr} - ${endDateStr})`];
 
   // 1. Prepare Header Row 
-  // REMOVED department text from name as requested
   const headerRow = [
     '日期', 
     '星期', 
@@ -37,7 +31,7 @@ export const exportToExcel = (
     ...dispensingEmps.map(e => e.name)
   ];
 
-  // 2. Prepare Data Rows (Iterate selected Dates)
+  // 2. Prepare Data Rows
   const data = [];
   
   for (const date of dateRange) {
@@ -54,7 +48,7 @@ export const exportToExcel = (
 
     // Spacer Column
     if (dispensingEmps.length > 0) {
-      row.push(''); // Empty cell acting as visual separator
+      row.push(''); 
     }
 
     // Dispensing Columns
@@ -65,35 +59,55 @@ export const exportToExcel = (
     data.push(row);
   }
 
-  // 3. Add Stats at the bottom
+  // 3. Add Stats
   data.push([]); // Vertical spacer row
   
-  // Helper to build stat row with spacer
   const buildStatRow = (label: string, getValue: (emp: Employee) => string | number) => {
     const row: (string | number)[] = [label, ''];
     retailEmps.forEach(emp => row.push(getValue(emp)));
-    if (dispensingEmps.length > 0) row.push(''); // Spacer
+    if (dispensingEmps.length > 0) row.push(''); 
     dispensingEmps.forEach(emp => row.push(getValue(emp)));
     return row;
   };
 
   data.push(buildStatRow('統計 (本區間)', () => ''));
   
-  // Sort shift defs by order
-  const sortedDefs = Object.values(shiftDefinitions).sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+  // A/P Count Row
+  data.push(buildStatRow('A/P', (emp) => {
+    let count = 0;
+    for (const date of dateRange) {
+      const dateKey = format(date, 'yyyy-MM-dd');
+      const { code } = parseShiftCode(schedule[dateKey]?.[emp.id]);
+      if (code === BuiltInShifts.A || code === BuiltInShifts.P) count++;
+    }
+    return count > 0 ? count : '';
+  }));
 
-  sortedDefs.forEach(def => {
-    const statRow = buildStatRow(def.label, (emp) => {
-      let count = 0;
-      for (const date of dateRange) {
-        const dateKey = format(date, 'yyyy-MM-dd');
-        const { code } = parseShiftCode(schedule[dateKey]?.[emp.id]);
-        if (code === def.code) count++;
+  // Full Count Row (A全, P全, 全+2)
+  data.push(buildStatRow('全', (emp) => {
+    let count = 0;
+    for (const date of dateRange) {
+      const dateKey = format(date, 'yyyy-MM-dd');
+      const { code } = parseShiftCode(schedule[dateKey]?.[emp.id]);
+      if (code === BuiltInShifts.A_FULL || code === BuiltInShifts.P_FULL || code === BuiltInShifts.FULL_PLUS_2) count++;
+    }
+    return count > 0 ? count : '';
+  }));
+
+  // Annual Leave Hours Row
+  data.push(buildStatRow('特休(時)', (emp) => {
+    let hours = 0;
+    for (const date of dateRange) {
+      const dateKey = format(date, 'yyyy-MM-dd');
+      const { code, ot } = parseShiftCode(schedule[dateKey]?.[emp.id]);
+      if (code === BuiltInShifts.ANNUAL) {
+         const def = shiftDefinitions[code];
+         // Use OT slot for custom annual hours, default to def.hours (8)
+         hours += (ot > 0 ? ot : def.hours);
       }
-      return count > 0 ? count : '';
-    });
-    data.push(statRow);
-  });
+    }
+    return hours > 0 ? hours : '';
+  }));
 
   // Overtime Hours Row
   const otRow = buildStatRow('加班時數', (emp) => {
@@ -101,24 +115,23 @@ export const exportToExcel = (
     for (const date of dateRange) {
       const dateKey = format(date, 'yyyy-MM-dd');
       const { code, ot } = parseShiftCode(schedule[dateKey]?.[emp.id]);
-      
-      if (code && shiftDefinitions[code]) {
+      if (code && shiftDefinitions[code] && code !== BuiltInShifts.ANNUAL && code !== BuiltInShifts.OFF) {
         const def = shiftDefinitions[code];
         totalOt += (def.defaultOvertime || 0);
+        totalOt += ot;
       }
-      if (ot > 0) totalOt += ot;
     }
     return totalOt > 0 ? totalOt : '';
   });
   data.push(otRow);
 
-  // Total Hours Row
-  const hoursRow = buildStatRow('總時數(含加班)', (emp) => {
+  // Total Work Hours Row (Excluding Annual Leave)
+  const hoursRow = buildStatRow('總工時(不含特休)', (emp) => {
     let totalHours = 0;
     for (const date of dateRange) {
       const dateKey = format(date, 'yyyy-MM-dd');
       const { code, ot } = parseShiftCode(schedule[dateKey]?.[emp.id]);
-      if (code && shiftDefinitions[code]) {
+      if (code && shiftDefinitions[code] && code !== BuiltInShifts.ANNUAL && code !== BuiltInShifts.OFF) {
         const def = shiftDefinitions[code];
         totalHours += def.hours;
         totalHours += (def.defaultOvertime || 0);
@@ -134,25 +147,17 @@ export const exportToExcel = (
   const worksheetData = [titleRow, [], headerRow, ...data];
   const ws = XLSX.utils.aoa_to_sheet(worksheetData);
 
-  // Merge title cells
+  // Merge title
   if(!ws['!merges']) ws['!merges'] = [];
   ws['!merges'].push({ s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } }); 
 
-  // 5. Style adjustments (Column Widths)
+  // 5. Styles
   const wscols = [
     { wch: 12 }, // Date
     { wch: 8 },  // Weekday
   ]; 
-  
-  // Retail Widths
   retailEmps.forEach(() => wscols.push({ wch: 15 }));
-  
-  // Spacer Width (Narrow)
-  if (dispensingEmps.length > 0) {
-    wscols.push({ wch: 2 }); // Narrow column to act as border/separator
-  }
-
-  // Dispensing Widths
+  if (dispensingEmps.length > 0) wscols.push({ wch: 2 });
   dispensingEmps.forEach(() => wscols.push({ wch: 15 }));
 
   ws['!cols'] = wscols;
@@ -166,7 +171,6 @@ export const exportToExcel = (
   XLSX.writeFile(wb, `${storeName}_排班表_${startDateStr.replace(/\//g, '-')}.xlsx`);
 };
 
-// Helper to calculate cell text
 function getCellText(
   schedule: StoreSchedule, 
   dateKey: string, 
@@ -179,8 +183,17 @@ function getCellText(
   let cellText = '';
   if (code && shiftDefinitions[code]) {
     cellText = shiftDefinitions[code].shortLabel || code;
-    if (ot > 0) {
-      cellText += `+${ot}`;
+    
+    // Special display for Annual Leave with custom hours
+    if (code === BuiltInShifts.ANNUAL) {
+       if (ot > 0 && ot !== shiftDefinitions[code].hours) {
+         cellText += `(${ot})`;
+       }
+    } else {
+       // Normal Overtime
+       if (ot > 0) {
+         cellText += `+${ot}`;
+       }
     }
   }
   return cellText;
